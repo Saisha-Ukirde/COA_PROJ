@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline Execution</title>
+<style>
+  :root {
+    --bg: #f6f7f8;
+    --panel: #ffffff;
+    --ink: #1c2530;
+    --soft: #66727f;
+    --line: #dde1e5;
+    --accent: #1f6f78;
+    --stall: #e9ebed;
+    --c0: #cfe3e6; --c1: #e3dcc8; --c2: #d9dfee; --c3: #e6d3d6; --c4: #d6e5d2; --c5: #e4e0ec;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 40px 20px 32px; }
+  h1 { font-size: 26px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .sub { color: var(--soft); margin: 0 0 28px; max-width: 62ch; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-bottom: 24px; }
+  .group { display: flex; gap: 8px; align-items: center; }
+  button, select {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 14px; cursor: pointer;
+  }
+  button:hover { border-color: var(--soft); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel); }
+  .seg button { border: 0; border-radius: 0; background: transparent; }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+  label.check { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+
+  .stages { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 24px; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; min-height: 84px; }
+  .stage b { display: block; font-weight: 600; }
+  .stage small { color: var(--soft); }
+  .slot { margin-top: 8px; font-family: Consolas, "Courier New", monospace; font-size: 13px; padding: 4px 8px; border-radius: 4px; background: var(--stall); min-height: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .slot.idle { color: var(--soft); }
+
+  .stats { display: flex; flex-wrap: wrap; gap: 28px; margin-bottom: 18px; }
+  .stat span { display: block; color: var(--soft); font-size: 13px; }
+  .stat strong { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .tablewrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; }
+  th, td { text-align: center; padding: 0; height: 34px; font-size: 13px; border-left: 1px solid var(--bg); }
+  thead th { color: var(--soft); font-weight: 400; border-bottom: 1px solid var(--line); }
+  thead th.now { color: var(--accent); font-weight: 600; }
+  th.ins, td.ins { text-align: left; padding: 0 14px; white-space: nowrap; width: 190px; font-family: Consolas, "Courier New", monospace; border-left: 0; }
+  td.cell { min-width: 42px; }
+  td.cell.stall { background: var(--stall); color: var(--soft); }
+  td.cell.now { box-shadow: inset 0 0 0 2px var(--accent); }
+  .note { color: var(--soft); font-size: 13px; margin: 14px 0 0; max-width: 70ch; }
+
+  footer { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--soft); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 24px; }
+
+  @media (max-width: 720px) { .stages { grid-template-columns: repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Pipeline execution</h1>
+  <p class="sub">A five stage instruction pipeline: fetch, decode, execute, memory access and write back. Step through the clock and compare it with running one instruction at a time.</p>
+
+  <div class="controls">
+    <div class="group">
+      <button class="primary" id="run">Run</button>
+      <button id="step">Step</button>
+      <button id="reset">Reset</button>
+    </div>
+    <div class="seg" role="group" aria-label="Execution mode">
+      <button id="mPipe" aria-pressed="true">Pipelined</button>
+      <button id="mSeq" aria-pressed="false">One at a time</button>
+    </div>
+    <label class="check"><input type="checkbox" id="haz" checked> Data hazards, no forwarding</label>
+    <div class="group">
+      <label for="speed">Speed</label>
+      <select id="speed">
+        <option value="1100">Slow</option>
+        <option value="650" selected>Normal</option>
+        <option value="250">Fast</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="stages" id="stages"></div>
+
+  <div class="stats">
+    <div class="stat"><span>Clock cycle</span><strong id="sCycle">0</strong></div>
+    <div class="stat"><span>Instructions finished</span><strong id="sDone">0 / 6</strong></div>
+    <div class="stat"><span>Stall cycles</span><strong id="sStall">0</strong></div>
+    <div class="stat"><span>Cycles per instruction</span><strong id="sCpi">0.00</strong></div>
+  </div>
+
+  <div class="tablewrap"><table id="grid"></table></div>
+  <p class="note" id="note"></p>
+
+  <footer>
+    <span>Saisha Ukirde</span>
+    <span>2125UIDF1102</span>
+    <span>Submitted to Prof. Ankita</span>
+  </footer>
+</main>
+
+<script>
+(function () {
+  var STAGES = ["IF", "ID", "EX", "MEM", "WB"];
+  var NAMES = ["Fetch", "Decode", "Execute", "Memory", "Write back"];
+  var PROG = [
+    { t: "LW  R1, 0(R2)",  dst: "R1",  src: ["R2"] },
+    { t: "ADD R3, R1, R4", dst: "R3",  src: ["R1", "R4"] },
+    { t: "SUB R5, R3, R6", dst: "R5",  src: ["R3", "R6"] },
+    { t: "AND R7, R8, R9", dst: "R7",  src: ["R8", "R9"] },
+    { t: "OR  R10, R7, R11", dst: "R10", src: ["R7", "R11"] },
+    { t: "SW  R5, 4(R2)",  dst: null,  src: ["R5", "R2"] }
+  ];
+
+  var mode = "pipe", cyc = 0, timer = null, plan = [], total = 0;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function build() {
+    var hz = $("haz").checked;
+    plan = [];
+    PROG.forEach(function (ins, i) {
+      var r = {};
+      if (mode === "seq") {
+        r.IF = i * 5;
+      } else {
+        r.IF = i === 0 ? 0 : plan[i - 1].ID;
+      }
+      var id = r.IF + 1;
+      if (mode === "pipe") {
+        if (i > 0) id = Math.max(id, plan[i - 1].ID + 1);
+        if (hz) {
+          for (var p = 0; p < i; p++) {
+            if (PROG[p].dst && ins.src.indexOf(PROG[p].dst) > -1) id = Math.max(id, plan[p].WB);
+          }
+        }
+      }
+      r.ID = id; r.EX = id + 1; r.MEM = id + 2; r.WB = id + 3;
+      plan.push(r);
+    });
+    total = plan[plan.length - 1].WB + 1;
+  }
+
+  function what(i, t) {
+    var r = plan[i];
+    if (t < r.IF || t > r.WB) return null;
+    if (t >= r.IF && t < r.ID) return t === r.IF ? "IF" : "stall";
+    for (var s = 1; s < 5; s++) if (r[STAGES[s]] === t) return STAGES[s];
+    return null;
+  }
+
+  function stallCount(upTo) {
+    var n = 0;
+    for (var t = 0; t <= upTo; t++) {
+      for (var i = 0; i < PROG.length; i++) if (what(i, t) === "stall") { n++; break; }
+    }
+    return n;
+  }
+
+  function render() {
+    var now = cyc - 1;
+    var sh = "";
+    STAGES.forEach(function (s, k) {
+      var txt = "idle", cls = "slot idle", bg = "";
+      for (var i = 0; i < PROG.length; i++) {
+        if (now < 0) break;
+        var w = what(i, now);
+        if (w === s || (s === "IF" && w === "stall")) {
+          txt = PROG[i].t + (w === "stall" ? " (held)" : ""); cls = "slot"; bg = "background:var(--c" + i + ")";
+        }
+      }
+      sh += '<div class="stage"><b>' + s + '</b><small>' + NAMES[k] + '</small><div class="' + cls + '" style="' + bg + '">' + txt + '</div></div>';
+    });
+    $("stages").innerHTML = sh;
+
+    var done = 0;
+    for (var d = 0; d < PROG.length; d++) if (plan[d].WB <= now) done++;
+    $("sCycle").textContent = cyc;
+    $("sDone").textContent = done + " / " + PROG.length;
+    $("sStall").textContent = now >= 0 ? stallCount(now) : 0;
+    $("sCpi").textContent = done ? (cyc / done).toFixed(2) : "0.00";
+
+    var cols = Math.max(total, 10);
+    var h = '<thead><tr><th class="ins">Instruction</th>';
+    for (var c = 0; c < cols; c++) h += '<th class="' + (c === now ? "now" : "") + '">' + (c + 1) + '</th>';
+    h += '</tr></thead><tbody>';
+    PROG.forEach(function (ins, i) {
+      h += '<tr><td class="ins">' + ins.t + '</td>';
+      for (var c = 0; c < cols; c++) {
+        var w = c <= now ? what(i, c) : null;
+        var cls = "cell" + (w === "stall" ? " stall" : "") + (c === now ? " now" : "");
+        var st = w && w !== "stall" ? ' style="background:var(--c' + i + ')"' : "";
+        h += '<td class="' + cls + '"' + st + '>' + (w === "stall" ? "stall" : (w || "")) + '</td>';
+      }
+      h += '</tr>';
+    });
+    $("grid").innerHTML = h + '</tbody>';
+
+    var msg;
+    if (now < 0) msg = "Press Step or Run to start the clock.";
+    else if (cyc >= total) {
+      var seqCycles = PROG.length * 5;
+      msg = "Finished in " + total + " cycles. Running one instruction at a time takes " + seqCycles + " cycles for the same program.";
+    } else msg = mode === "pipe"
+      ? "Each cycle, a new instruction enters fetch while earlier ones move ahead. A stall appears when an instruction must wait for a result that is not written back yet."
+      : "Only one instruction is in flight at a time, so four of the five stages sit idle.";
+    $("note").textContent = msg;
+    if (cyc >= total) stop();
+  }
+
+  function tick() { if (cyc < total) { cyc++; render(); } }
+  function stop() { if (timer) { clearInterval(timer); timer = null; } $("run").textContent = "Run"; }
+  function start() {
+    if (cyc >= total) cyc = 0;
+    $("run").textContent = "Pause";
+    timer = setInterval(tick, +$("speed").value);
+    tick();
+  }
+  function reset() { stop(); cyc = 0; build(); render(); }
+
+  $("run").onclick = function () { timer ? stop() : start(); };
+  $("step").onclick = function () { stop(); if (cyc >= total) cyc = 0; tick(); };
+  $("reset").onclick = reset;
+  $("haz").onchange = reset;
+  $("speed").onchange = function () { if (timer) { stop(); start(); } };
+  $("mPipe").onclick = function () { mode = "pipe"; $("mPipe").setAttribute("aria-pressed", "true"); $("mSeq").setAttribute("aria-pressed", "false"); $("haz").disabled = false; reset(); };
+  $("mSeq").onclick = function () { mode = "seq"; $("mSeq").setAttribute("aria-pressed", "true"); $("mPipe").setAttribute("aria-pressed", "false"); $("haz").disabled = true; reset(); };
+
+  build(); render();
+})();
+</script>
+</body>
+</html>
